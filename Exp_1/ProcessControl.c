@@ -19,10 +19,44 @@ typedef struct PCB { // 进程控制块
     struct PCB *next;
 } PCB;
 
-PCB *ready = NULL; // 就绪队列
-PCB *blocked = NULL; // 阻塞队列
-PCB *running = NULL; // 运行进程
+// 队列结构体, 维护一个哨兵头节点(不存数据, 没哨兵头节点需要二重指针修改头节点地址)
+typedef struct Queue {
+    PCB *head;
+    PCB *tail;
+    int size;
+} Queue;
+
+Queue ready;  // 就绪队列
+Queue blocked; // 阻塞队列
+PCB *running = NULL; // 运行进程(只有一个, 不需要队列)
 MemBlock *mem_head = NULL; // 内存管理链表头指针
+
+void init_queue(Queue *q) {
+    q->head = (PCB *)malloc(sizeof(PCB));
+    q->head->next = NULL;
+    q->tail = q->head;
+    q->size = 0;
+}
+
+void enqueue(Queue *q, PCB *process) {
+    process->next = NULL;
+    q->tail->next = process;
+    q->tail = process;
+    q->size++;
+}
+
+PCB* dequeue(Queue *q) {
+    if (q->head == q->tail) {
+        return NULL;
+    }
+    PCB *process = q->head->next;
+    q->head->next = process->next;
+
+    // 取出的是最后一个接待
+    if (process->next == NULL) {
+        q->tail = q->head;
+    }
+}
 
 // 初始化内存
 void init_memory() {
@@ -64,4 +98,38 @@ int allocate_memory(int size) {
         curr = curr->next;
     }
     return -1; // 没找到大小合适的内存块
+}
+
+// 传入进程的基址, 在内存链表中找到该进程的内存块
+void free_memory(int start_addr) {
+    MemBlock *curr = mem_head;
+    while (curr != NULL && curr->start_addr != start_addr) {
+        curr = curr->next;
+    }
+    if (curr == NULL) {
+        return;
+    }
+    curr->status = 'H';
+
+    // 看该块后面是否空闲, 若空闲则合并
+    if (curr->next != NULL && curr->next->status == 'H') {
+        MemBlock *temp = curr->next;
+        curr->length += temp->length;
+        curr->next = temp->next;
+        if (temp->next != NULL) {
+            temp->next->prev = curr;
+        }
+        free(temp);
+    }
+
+    // 看该块前面是否空闲, 如空闲则合并
+    if (curr->prev != NULL && curr->prev->status == 'H') {
+        MemBlock *temp = curr->prev;
+        temp->length += curr->length;
+        temp->next = curr->next;
+        if (curr->next != NULL) {
+            curr->next->prev = temp;
+        }
+        free(curr);
+    }
 }
