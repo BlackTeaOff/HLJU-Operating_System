@@ -52,10 +52,14 @@ PCB* dequeue(Queue *q) {
     PCB *process = q->head->next;
     q->head->next = process->next;
 
-    // 取出的是最后一个接待
+    // 取出的是最后一个节点, 重置尾指针指向哨兵头节点
     if (process->next == NULL) {
         q->tail = q->head;
     }
+
+    process->next = NULL;
+    q->size--;
+    return process;
 }
 
 // 初始化内存
@@ -132,4 +136,188 @@ void free_memory(int start_addr) {
         }
         free(curr);
     }
+}
+
+// 调度, 出队就绪队列第一个进程, 放入running
+void dispatch() {
+    if (running == NULL && ready.size > 0) {
+        running = dequeue(&ready);
+    }
+}
+
+void create_process() {
+    char name[20];
+    int size;
+    printf("请输入新进程名称: ");
+    scanf("%s", name);
+    printf("请输入进程需要申请的内存大小: ");
+    scanf("%d", &size);
+
+    int start_addr = allocate_memory(size);
+    if (start_addr == -1) {
+        printf("内存不足, 无法创建进程!\n");
+        return;
+    }
+
+    PCB *p = (PCB *)malloc(sizeof(PCB));
+    strcpy(p->name, name);
+    p->mem_start = start_addr;
+    p->mem_length = size;
+    p->next = NULL;
+
+    enqueue(&ready, p);
+    printf("进程%s已创建!\n", name);
+    // 如果running为空就把这个进程放入running
+    dispatch();
+}
+
+// 把当前running放入就绪队列, 从就绪队列出队一个进程放入running
+void time_slice_out() {
+    if (running == NULL) {
+        printf("当前没有正在运行的进程. \n");
+        return;
+    }
+    printf("进程%s时间片到, 放入就绪队列. \n", running->name);
+    enqueue(&ready, running);
+    running = NULL;
+    dispatch();
+}
+
+// 把当前running进程放入阻塞队列, 从就绪队列里出队一个进程放入running
+void block_process() {
+    if (running == NULL) {
+        printf("当前没有正在运行的进程. \n");
+        return;
+    }
+    printf("进程%s被阻塞, 放入阻塞队列. \n", running->name);
+    enqueue(&blocked, running);
+    running = NULL;
+    dispatch();
+}
+
+// 从阻塞队列出队一个进程, 放入就绪队列
+void wakeup_process() {
+    if (blocked.size == 0) {
+        printf("当前阻塞队列为空, 无可唤醒进程. \n");
+        return;
+    }
+    PCB *p = dequeue(&blocked);
+    enqueue(&ready, p);
+    printf("唤醒进程%s, 放入就绪队列. \n", p->name);
+    // 如果ready里没有进程, 就从ready里出队一个进程放入running
+    dispatch();
+}
+
+// 终止running进程, 回收内存
+void terminate_process() {
+    if (running == NULL) {
+        printf("当前没有正在运行的进程. \n");
+        return;
+    }
+    free_memory(running->mem_start);
+    printf("已终止并回收进程%s的内存. \n", running->name);
+    // 释放PCB内存
+    free(running);
+    running = NULL;
+    dispatch();
+}
+
+void print_status() {
+    printf("------------------------------\n");
+    printf("[运行中]: ");
+    if (running != NULL) {
+        printf("%s (内存: %d~%d)", running->name, running->mem_start, running->mem_start + running->mem_length - 1);
+    } else {
+        printf("无运行进程");
+    }
+    printf("\n");
+
+    printf("[就绪队列](共%d个): ", ready.size);
+    PCB *temp = ready.head->next;
+    if (!temp) {
+        printf("无就绪进程");
+    }
+    while (temp) {
+        printf("%s", temp->name);
+        if (temp->next) {
+            printf(" -> ");
+        }
+        temp = temp->next;
+    }
+    printf("\n");
+
+    printf("[阻塞队列](共%d个): ", blocked.size);
+    temp = blocked.head->next;
+    if (!temp) {
+        printf("无阻塞进程");
+    }
+    while (temp) {
+        printf("%s", temp->name);
+        if (temp->next) {
+            printf(" -> ");
+        }
+        temp = temp->next;
+    }
+    printf("\n");
+
+    int mem_using = 0;
+
+    printf("[内存分布链表]:");
+    MemBlock *m = mem_head;
+    while (m) {
+        printf("[%c | %d | %d]", m->status, m->start_addr, m->length);
+        if (m->next) {
+            printf(" <-> ");
+        }
+        if (m->status == 'P') {
+            mem_using += m->length;
+        }
+        m = m->next;
+    }
+    printf("\n系统总内存: %d", TOTAL_MEMORY);
+    printf("\n可用内存: %d", TOTAL_MEMORY - mem_using);
+    printf("\n已用内存: %d", mem_using);
+    printf("\n------------------------------");
+}
+
+int main() {
+    init_memory();
+    init_queue(&ready);
+    init_queue(&blocked);
+
+    int choice;
+    while (1) {
+        print_status();
+        printf("\n1. 创建新进程\n");
+        printf("2. 执行进程时间片到\n");
+        printf("3. 阻塞执行进程\n");
+        printf("4. 唤醒第一个阻塞进程\n");
+        printf("5. 终止执行进程\n");
+        printf("0. 退出\n");
+        printf("请输入操作编号: ");
+        scanf("%d", &choice);
+
+        switch (choice) {
+            case 1:
+                create_process();
+                break;
+            case 2:
+                time_slice_out();
+                break;
+            case 3:
+                block_process();
+                break;
+            case 4:
+                wakeup_process();
+                break;
+            case 5:
+                terminate_process();
+                break;
+            case 0:
+                exit(0);
+            default:
+                printf("输入的编号无效! \n");
+        }
+    }
+    return 0;
 }
