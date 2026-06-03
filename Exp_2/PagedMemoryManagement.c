@@ -21,7 +21,7 @@ typedef struct {
 
 // 进程数组, 存多个进程的指针
 PCB *pcb_pool[MAX_PROCESS];
-// 从1开始, pid0通常不分配给普通用户进程
+// 从1开始, pid0通常不分配给普通用户进程(是pid不是下标)
 int next_pid = 1;
 
 // 得到char(8位)中的第bit_no位的bit是1还是0(该块的占用情况) 
@@ -41,6 +41,7 @@ int getbit(char b, int bit_no) {
     }
 }
 
+// mask - 掩码
 // 将char中第bit_no位(从右向左数)的bit置为0/1(flag), *b是因为要修改b本身
 // 同样使用(char)1, 00000001, 将其左移bit_no位, 放入mask(它记录了bit_no的位置, 方便对char执行操作)
 // flag为1代表置1, 将b和mask进行按位或操作, mask为0的部分b保持不变, mask为1的位置会置b对应位置为1
@@ -142,7 +143,7 @@ void create_process() {
 
     // 去内存块给每个页分配内存
     int allocated = 0; // 当前正在分配第几页(从0开始)
-    // 遍历内存, 找空块
+    // 遍历内存, 找空块(不能省略第二个条件, 省略的话分配完了还会进入循环)
     for (int i = 0; i < MEM_SIZE / 8 && allocated < block_count; i++) {
         // 正在分配的页号大于一共分配的页号就退出
         for (int j = 0; j < 8 && allocated < block_count; j++) {
@@ -178,15 +179,141 @@ void print_all_processes() {
         printf("当前无进程.\n");
     }
 
-    printf("---------------ENDD---------------\n");
+    printf("--------------------------------------\n");
+}
+
+// 根据pid在进程数组里找到它的下标
+int find_process_index(int pid) {
+    for (int i = 0; i < MAX_PROCESS; i++) {
+        if (pcb_pool[i] != NULL && pcb_pool[i]->pid == pid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// 给逻辑地址(页号与偏移量, 进程内的地址), 计算出其物理地址
+// 物理地址 = 块号 × 块(页)的大小 + 偏移量
+// 页号可以将逻辑地址右移偏移量的个数位得到
+// 块号通过查页表得到
+// 偏移量通过mask得到
+void translate_address() {
+    int pid;
+    printf("请输入要进行地址转换的进程PID: ");
+    scanf("%d", &pid);
+
+    int idx = find_process_index(pid);
+    if (idx == -1) {
+        printf("找不到PID为 %d 的进程.\n", pid);
+        return;
+    }
+
+    PCB *p = pcb_pool[idx];
+    int la; // logicalAddress
+    printf("请输入逻辑地址: ");
+    scanf("%d", &la);
+    
+    // 输入的是十进制的逻辑地址
+    if (la < 0) {
+        return;
+    }
+
+    if (la >= p->size) {
+        printf("逻辑地址 %d 超出了进程大小 %d.\n", la, p->size);
+        return;
+    }
+
+    // 计算出偏移量的位数
+    int shift = mylog2(BLOCK_SIZE);
+    // 逻辑地址右移偏移量的位数就是前面的页号大小
+    int pageno = la >> shift;
+
+    // int有32位, 一个十六进制数4位, 4×8等于32
+    // 生成11...11100000...0000的掩码, 左移偏移量的位数, 右面0的位置就是偏移量的位置
+    int mask = (0xffffffff) << shift;
+    // 取反变成00...00011111...1111, 左面的0是页号, 右面的1的位置是偏移量(用来提取偏移量)
+    mask = ~mask;
+    // 逻辑地址和掩码进行与操作, 0的位置必定还是0, 1的位置由la决定
+    int offset = la & mask;
+
+    // 物理地址 = 物理块号 * 块大小 + 页内偏移
+    int physical_block = p->page_table[pageno];
+    int physical_addr = physical_block * BLOCK_SIZE + offset;
+
+    printf("逻辑地址 %d 对应的物理地址为: %d\n", la, physical_addr);
+}
+
+// 关闭进程并回收内存
+void destory_process() {
+    int pid;
+    printf("请输入要撤销的进程PID: ");
+    scanf("%d", &pid);
+
+    int idx = find_process_index(pid);
+    if (idx == -1) {
+        printf("找不到PID为 %d 的路径\n", pid);
+        return;
+    }
+
+    PCB *p = pcb_pool[idx];
+
+    for (int i = 0; i < p->block_count; i++) {
+        int block_no = p->page_table[i];
+        // 块号/8向下取整得到在哪个char里, 块号%8得到在char的哪个bit里
+        setbit(&bitmap[block_no / 8], block_no % 8, 0);
+    }
+
+    free(p->page_table);
+    free(p);
+    pcb_pool[idx] = NULL;
+    printf("进程PID: %d 已撤销.\n", pid);
 }
 
 int main() {
+    int choice;
     init_bitmap();
-    print_bitmap();
-    create_process();
-    print_bitmap();
-    print_all_processes();
+
+    while (1) {
+        printf("---------------分页式存储管理----------------\n");
+        printf("1. 查看当前内存位示图\n");
+        printf("2. 创建进程\n");
+        printf("3. 地址转换\n");
+        printf("4. 撤销进程\n");
+        printf("5. 查看所有进程信息\n");
+        printf("0. 退出\n");
+        printf("---------------------------------------------\n");
+        printf("请输入要执行的命令: ");
+        scanf("%d", &choice);
+
+        switch (choice) {
+            case 1:
+                print_bitmap();
+                break;
+            case 2:
+                create_process();
+                break;
+            case 3:
+                translate_address();
+                break;
+            case 4:
+                destory_process();
+                break;
+            case 5:
+                print_all_processes();
+                break;
+            case 0:
+                exit(0);
+        }
+    }
+    return 0;
+    // init_bitmap();
+    // print_bitmap();
+    // create_process();
+    // print_bitmap();
+    // print_all_processes();
+    // translate_address();
+    // destroy_process();
+    // print_bitmap();
     //printf("\033[0m\033[1;31m%s\033[0m", "test");
     // for (int i = 0; i < MEM_SIZE / 8; i++) {
     //     printf("%d\n", bitmap[i]);
