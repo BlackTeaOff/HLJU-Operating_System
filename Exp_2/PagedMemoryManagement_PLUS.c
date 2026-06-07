@@ -115,6 +115,19 @@ void free_block(char *bitmap, int block_no) {
     setbit(&bitmap[block_no / 8], block_no % 8, 0);
 }
 
+// 统计指定位示图中空闲块数量
+int count_free_blocks(char* bitmap, int max_size) {
+    int count = 0;
+    for (int i = 0; i < max_size / 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            if (getbit(bitmap[i], j) == 0) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
 void create_process() {
     int slot = -1;
     for (int i = 0; i < MAX_PROCESS; i++) {
@@ -137,6 +150,22 @@ void create_process() {
     }
 
     int block_count = (int)ceil((double)size / BLOCK_SIZE);
+    // 将前3页(RESIDENT_SET_SIZE)装入物理内存, 若小于3就装入全部页
+    int intital_load = (block_count < RESIDENT_SET_SIZE ? block_count : RESIDENT_SET_SIZE);
+
+    // 检查外存容量
+    int free_disk = count_free_blocks(disk_bitmap, DISK_SIZE);
+    if (free_disk < block_count) {
+        printf("外存空间不足! 进程需要 %d 个外存块, 当前仅剩 %d 块.\n", block_count, free_disk);
+        return;
+    }
+
+    // 检查内存容量
+    int free_mem = count_free_blocks(mem_bitmap, MEM_SIZE);
+    if (free_mem < intital_load) {
+        printf("内存空间不足! 需要装入 %d 块, 当前仅剩 %d 块.\n", intital_load, free_mem);
+        return;
+    }
 
     PCB *p = (PCB *)malloc(sizeof(PCB));
     p->pid = next_pid++;
@@ -156,8 +185,6 @@ void create_process() {
         p->page_table[i].mem_block = -1; // 未装入内存
     }
 
-    // 将前3页(RESIDENT_SET_SIZE)装入物理内存, 若小于3就装入全部页
-    int intital_load = (block_count < RESIDENT_SET_SIZE ? block_count : RESIDENT_SET_SIZE);
     for (int i = 0; i < intital_load; i++) {
         p->page_table[i].mem_block = allocate_block(mem_bitmap, MEM_SIZE);
         p->page_table[i].valid_bit = 1;
@@ -269,7 +296,7 @@ void translate_address() {
         // 把淘汰页的物理块给该页用
         int mem_block = victim_pte->mem_block;
 
-        printf("利用 FIFO 算法选中内存 %d 号页, 该页内存块号为 %d, 修改位为%d, 外存块号为 %d.\n", victim_page, mem_block, victim_pte->disk_block);
+        printf("利用 FIFO 算法选中内存 %d 号页, 该页内存块号为 %d, 修改位为%d, 外存块号为 %d.\n", victim_page, mem_block, victim_pte->modified_bit,victim_pte->disk_block);
 
         if (victim_pte->modified_bit == 1) {
             printf("将内存 %d 号块内容写入外存 %d 号块, 成功.\n", mem_block, victim_pte->disk_block);
@@ -301,6 +328,11 @@ void print_statistics() {
     int idx = find_process_index(pid);
     if (idx == -1) {
         printf("找不到PID为 %d 的进程.\n", pid);
+        return;
+    }
+
+    if (pcb_pool[idx]->access_count == 0) {
+        printf("该进程尚未进行任何地址访问.\n");
         return;
     }
 
