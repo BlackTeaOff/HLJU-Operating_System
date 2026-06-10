@@ -20,6 +20,7 @@ typedef struct {
     int modified_bit; // 修改位: 1表示被修改过, 置换时需要写回
     int mem_block; // 内存块号, 该页对应物理内存的块号
     int disk_block; // 外存块号, 该页对应物理外村的块号
+    int last_access_time; // 这个页的最后访问时间(LRU用)
 } PTE; // Page Table Entry 页表条目
 
 typedef struct PCB { // 进程控制块
@@ -30,6 +31,7 @@ typedef struct PCB { // 进程控制块
     int block_count;
     PTE *page_table;
 
+    int algo; // 1: FIFO, 2: LRU, 一个进程有一个页面置换的算法(因为是局部置换)
     int page_fault_count; // 缺页次数
     int access_count;
 
@@ -51,7 +53,8 @@ Queue ready;  // 就绪队列
 Queue blocked; // 阻塞队列
 PCB *running = NULL; // 运行进程(只有一个, 不需要队列)
 
-/* ================= 实验二：位示图与基础位运算 ================= */
+int global_time = 0;
+
 int getbit(char b, int bit_no) {
     char mask = (char)1 << bit_no;
     if (b & mask) {
@@ -159,10 +162,18 @@ void dispatch() {
 void create_process() {
     char name[20];
     int size;
+    int algo;
     printf("请输入新进程名称: ");
     scanf("%s", name);
     printf("请输入进程需要申请的内存大小: ");
     scanf("%d", &size);
+    printf("请选择置换算法 (1. FIFO 2. LRU): ");
+    scanf("%d", &algo);
+
+    if (algo != 1 && algo != 2) {
+        printf("输入无效, 默认使用FIFO.\n");
+        algo = 1;
+    }
 
     if (size <= 0) {
         return;
@@ -193,6 +204,7 @@ void create_process() {
     p->page_table = (PTE *)malloc(sizeof(PTE) * block_count); // 页表大小=块数
     p->access_count = 0;
     p->page_fault_count = 0;
+    p->algo = algo;
     p->fifo_head = 0;
     p->fifo_tail = 0;
     p->next = NULL;
@@ -203,11 +215,13 @@ void create_process() {
         p->page_table[i].valid_bit = 0; // 还未装入内存
         p->page_table[i].modified_bit = 0;
         p->page_table[i].mem_block = -1; // 未装入内存
+        p->page_table[i].last_access_time = 0; // 赋初值, 否则都是垃圾值
     }
 
     for (int i = 0; i < intital_load; i++) {
         p->page_table[i].mem_block = allocate_block(mem_bitmap, MEM_SIZE);
         p->page_table[i].valid_bit = 1;
+        p->page_table[i].last_access_time = ++global_time;
 
         // 队列尾指针下标存新的页号
         p->fifo_queue[p->fifo_tail] = i;
@@ -284,9 +298,24 @@ void wakeup_process() {
 // 对某个进程进行页面置换
 int page_replacement(PCB *p) {
     int victim_page = -1;
-    // 返回队头的页号
-    victim_page = p->fifo_queue[p->fifo_head];
-    p->fifo_head = (p->fifo_head + 1) % RESIDENT_SET_SIZE;
+
+    if (p->algo == 1) { // FIFO
+        // 返回队头的页号
+        victim_page = p->fifo_queue[p->fifo_head];
+        p->fifo_head = (p->fifo_head + 1) % RESIDENT_SET_SIZE;
+    } else if (p->algo == 2) { // LRU
+        // 找到last_access_time最小的那个置换出去(最近没被访问过)
+        int min_time = 9999999; // 最小的访问时间(最早)
+        // 遍历每一页, 如果在内存, 而且它的访问时间更小(更早), 就更新victim_page
+        for (int i = 0; i < p->block_count; i++) {
+            if (p->page_table[i].valid_bit == 1) {
+                if (p->page_table[i].last_access_time < min_time) {
+                    min_time = p->page_table[i].last_access_time;
+                    victim_page = i;
+                }
+            }
+        }
+    }
     return victim_page;
 }
 
@@ -324,12 +353,14 @@ void translate_address() {
     printf("逻辑地址 %d 对应的页号为: %d, 页内偏移地址为: %d\n", la, pageno, offset);
 
     running->access_count++;
-    
-    // 查页表该页是不是在内存中
+    global_time++; // 每读一页增加一次时间, 给新进来的页一个新的时间
+
+    // 查页表该页是不是在内存中(取地址是因为后面加[]会自动解指针)
     PTE *pte = &running->page_table[pageno];
     // 命中, 在内存中
     if (pte->valid_bit == 1) {
         printf("%d 号页在内存中, 命中.\n", pageno);
+        pte->last_access_time = global_time; // 更新访问时间
         if (write_flag) {
             // 换出时修改位为1要写回外存
             pte->modified_bit = 1;
@@ -340,13 +371,15 @@ void translate_address() {
         running->page_fault_count++;
         printf("%d 号页不在内存, 外存块号为%d, 需置换...\n", pageno, pte->disk_block);
 
-        // FIFO选淘汰页
+        // FIFO/LRU选淘汰页
         int victim_page = page_replacement(running);
         PTE *victim_pte = &running->page_table[victim_page];
         // 把淘汰页的物理块给该页用
         int mem_block = victim_pte->mem_block;
 
-        printf("利用 FIFO 算法选中内存 %d 号页, 该页内存块号为 %d, 修改位为%d, 外存块号为 %d.\n", victim_page, mem_block, victim_pte->modified_bit, victim_pte->disk_block);
+        char algo_name[10];
+        strcpy(algo_name, running->algo == 1 ? "FIFO" : "LRU");
+        printf("利用 %s 算法选中内存 %d 号页, 该页内存块号为 %d, 修改位为%d, 外存块号为 %d.\n", algo_name, victim_page, mem_block, victim_pte->modified_bit, victim_pte->disk_block);
 
         if (victim_pte->modified_bit == 1) {
             printf("将内存 %d 号块内容写入外存 %d 号块, 成功.\n", mem_block, victim_pte->disk_block);
@@ -361,7 +394,8 @@ void translate_address() {
         pte->valid_bit = 1;
         pte->mem_block = mem_block;
         pte->modified_bit = write_flag;
-        
+        pte->last_access_time = global_time;
+
         // 将该页入队
         running->fifo_queue[running->fifo_tail] = pageno;
         running->fifo_tail = (running->fifo_tail + 1) % RESIDENT_SET_SIZE;
