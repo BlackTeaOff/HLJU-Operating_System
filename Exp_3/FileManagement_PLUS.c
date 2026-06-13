@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 #define BLOCK_SIZE 1024 // 一个块1024字节(Byte) - 1K
 #define TOTAL_BLOCK 128 // 共128块, 虚拟磁盘总大小1x128=128K
@@ -29,6 +30,16 @@ unsigned char disk[DISK_SIZE];
 // 移动指针按2byte移动, fat[0]读取的就是前2byte(0, 1)的数据(第一块)
 // fat[1]读取的就是第1*2(2, 3)byte的数据(第二块的数据)
 unsigned short *fat = (unsigned short *)disk;
+
+// 当前所在路径(文件夹/目录)所在的块号
+// 根目录的块号是0
+int current_block;
+
+// 路径名栈
+// 记录当前目录各级目录的名字
+char path_stack[64][9];
+// 深度初始化为1, 根目录
+int path_depth = 1;
 
 void init_disk() {
     // 只读打开二进制文件
@@ -63,7 +74,31 @@ void init_disk() {
     }
 }
 
+// 打印当前路径
+void print_path() {
+    for (int i = 0; i < path_depth; i++) {
+        printf("%s", path_stack[i]);
+        printf("/");
+    }
+}
+
 int main() {
     init_disk();
+    char input[64];
+    char cmd[20];
+    char arg1[64];
+    char arg2[64];
+
+    while (1) {
+        print_path();
+        printf(">");
+        fgets(input, sizeof(input), stdin);
+        input[strcspn(input, "\n")] = '\0';
+
+        if (strlen(input) == 0) {
+            continue;
+        }
+        int args = sscanf(input, "%s %s %s", cmd, arg1, arg2);
+    }
     return 0;
 }
